@@ -52,6 +52,8 @@ import {
   ProviderDriverKind,
 } from "./providerInstance.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
+import { BoardCardRecords } from "./board.ts";
+import { DEFAULT_WORKER_ROLES, WorkerRoles } from "./workerRoles.ts";
 import {
   CloudSpeechModelId,
   SpeechAcceleration,
@@ -1557,6 +1559,9 @@ export const ServerSettings = Schema.Struct({
 
   /** Sent by the Usage tab with each summary request to this environment; edit in settings.json. Invalid values are ignored. */
   usageModelFilter: ForwardCompatibleOptional(UsageModelFilter),
+
+  workerRoles: WorkerRoles.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_WORKER_ROLES))),
+  boardCards: BoardCardRecords.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -1935,6 +1940,9 @@ export const ServerSettingsPatch = Schema.Struct({
   usageModelAliases: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, Schema.NullOr(TrimmedNonEmptyString)),
   ),
+
+  workerRoles: Schema.optionalKey(WorkerRoles),
+  boardCards: Schema.optionalKey(BoardCardRecords),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 

@@ -55,7 +55,10 @@ import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as PeerLinkRequests from "../peer/PeerLinkRequests.ts";
 import * as PeerLinks from "../peer/PeerLinks.ts";
 
-const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+const layerOrchestratorToolkit = Layer.mergeAll(
+  McpHttpServer.layerOrchestratorToolkit,
+  McpHttpServer.layerBoardToolkit,
+).pipe(
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
 );
@@ -348,6 +351,24 @@ describe("orchestrator MCP toolkit", () => {
                 Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
                 Effect.provideService(McpSchema.McpServerClient, client),
               );
+
+          const addedCard = yield* invoke("t3_board_add_card", {
+            title: "Spec only",
+            details: "Do the thing.",
+          });
+          expect(addedCard.structuredContent).toEqual({ number: 1, threadId: null });
+          const board = yield* invoke("t3_board_cards", {});
+          expect(board.structuredContent).toEqual({
+            cards: [
+              {
+                number: 1,
+                title: "Spec only",
+                details: "Do the thing.",
+                threadId: null,
+                status: "backlog",
+              },
+            ],
+          });
 
           const delegationStartSequence =
             yield* orchestrator.getThreadEventSequence(parentThreadId);

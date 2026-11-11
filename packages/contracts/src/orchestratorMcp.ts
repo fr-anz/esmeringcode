@@ -43,6 +43,7 @@ import {
 } from "./orchestrationV2.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
+import { WorkerRoleId, WorkerRoleIsolation } from "./workerRoles.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000));
 const OrchestratorMcpTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -170,7 +171,12 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   task: OrchestratorMcpPrompt,
   target: Schema.optional(OrchestratorMcpTarget),
   title: Schema.optional(OrchestratorMcpTitle),
-  role: Schema.optional(OrchestratorMcpTaskRole),
+  role: Schema.optional(
+    Schema.Union([OrchestratorMcpTaskRole, WorkerRoleId]).annotate({
+      description:
+        "A role id from `orchestrator_capabilities` `roles` applies that worker's model, isolation, and instructions. Explicit `target` and `isolation` win.",
+    }),
+  ),
   isolation: Schema.optional(
     Schema.Literals(["shared", "worktree"]).annotate({
       description:
@@ -622,6 +628,17 @@ export const OrchestratorMcpProviderCapability = Schema.Struct({
 });
 export type OrchestratorMcpProviderCapability = typeof OrchestratorMcpProviderCapability.Type;
 
+export const OrchestratorMcpRoleCapability = Schema.Struct({
+  id: WorkerRoleId,
+  label: Schema.String,
+  description: Schema.String,
+  /** Null runs on the caller's own provider. */
+  providerInstanceId: Schema.NullOr(ProviderInstanceId),
+  model: Schema.NullOr(Schema.String),
+  isolation: WorkerRoleIsolation,
+});
+export type OrchestratorMcpRoleCapability = typeof OrchestratorMcpRoleCapability.Type;
+
 export const OrchestratorMcpEnvironmentLink = Schema.Struct({
   environmentId: EnvironmentId,
   label: Schema.String,
@@ -651,6 +668,8 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   providers: Schema.Array(OrchestratorMcpProviderCapability),
+  /** Worker presets for `delegate_task` `role`. Optional: linked environments on older versions omit it. */
+  roles: Schema.optional(Schema.Array(OrchestratorMcpRoleCapability)),
   features: Schema.Struct({
     appOwnedSubagents: Schema.Boolean,
     asyncPolling: Schema.Boolean,
