@@ -1,0 +1,122 @@
+# EsmeringCode fork: merge upstream T3 Code releases, then build and publish the Linux AppImage.
+# Upstream's own release workflows need T3's infrastructure and stay disabled on the fork.
+name: EsmeringCode release
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "What to merge from upstream before building"
+        type: choice
+        options: [stable, main, none]
+        default: stable
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: esmering-release
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge upstream
+    if: github.repository != 'pingdotgg/t3code'
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.merge.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Merge upstream
+        id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ inputs.source || 'stable' }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/pingdotgg/t3code.git
+          git fetch --quiet upstream main --tags
+          case "$SOURCE" in
+            none) echo "changed=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+            main) target="upstream/main" ;;
+            *) target="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)" ;;
+          esac
+          if git merge-base --is-ancestor "$target" HEAD; then
+            echo "Already up to date with $target."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! git merge --no-edit "$target"; then
+            conflicts="$(git diff --name-only --diff-filter=U | sed 's/^/- `/; s/$/`/')"
+            git merge --abort
+            title="Upstream merge conflict: $target"
+            if ! gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number' | grep -q .; then
+              printf 'Merging `%s` into `main` conflicts in:\n\n%s\n\nResolve locally: `git fetch upstream --tags && git merge %s`, then push.\n' \
+                "$target" "$conflicts" "$target" | gh issue create --title "$title" --body-file -
+            fi
+            exit 1
+          fi
+          git push origin HEAD:main
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Build Linux AppImage
+    needs: sync
+    if: needs.sync.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Vite+
+        run: |
+          curl -fsSL https://vite.plus | bash
+          echo "$HOME/.local/share/vite-plus/bin" >> "$GITHUB_PATH"
+      - name: Install dependencies
+        run: vp i
+      - name: Pick version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Fork builds of upstream X.Y.Z are X.Y.(Z*1000+n), so every fork build and every
+          # newer upstream release sorts above the last one for the updater.
+          base="$(node -p "require('./apps/desktop/package.json').version")"
+          IFS=. read -r major minor patch <<< "${base%%-*}"
+          floor=$(( patch * 1000 ))
+          last="$(gh release list --limit 100 --json tagName --jq '.[].tagName' \
+            | sed -n "s/^v${major}\.${minor}\.\([0-9]*\)$/\1/p" \
+            | awk -v f="$floor" '$1 > f && $1 < f + 1000' | sort -n | tail -1)"
+          next=$(( ${last:-$floor} + 1 ))
+          echo "version=${major}.${minor}.${next}" >> "$GITHUB_OUTPUT"
+          echo "upstream=${base}" >> "$GITHUB_OUTPUT"
+      - name: Build
+        env:
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: ${{ github.repository }}
+        run: |
+          vp run dist:desktop:artifact --platform linux --target AppImage --arch x64 \
+            --build-version "${{ steps.version.outputs.version }}" --output-dir release
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          UPSTREAM: ${{ steps.version.outputs.upstream }}
+        run: |
+          set -euo pipefail
+          ls -la release
+          gh release create "v${VERSION}" release/*.AppImage release/*.yml \
+            --target "$(git rev-parse HEAD)" \
+            --title "EsmeringCode ${VERSION}" \
+            --notes "Built from upstream T3 Code ${UPSTREAM} plus the EsmeringCode changes on \`main\`."
